@@ -22,7 +22,7 @@ import pandas as pd
 
 from load import load_basal, load_bolus, load_glucose
 from plots import COLORS, Units, plot_agp, plot_daily, plot_overview, plot_time_in_range
-from stats import DISCLAIMER, daily_insulin, graph_notes, summary
+from stats import DISCLAIMER, PATTERNS_INTRO, care_team_patterns, daily_insulin, graph_notes, summary
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -82,6 +82,17 @@ def build_report(glucose, basal, bolus, days, unit) -> str:
         return (f'<section class="card"><h2>{title}</h2>{body_html}'
                 f'<div class="notes">{text}</div><p class="how">{how}</p></section>')
 
+    patterns = care_team_patterns(glucose, bolus, unit)
+    if patterns:
+        pattern_html = "".join(
+            f'<div class="pattern"><span class="tag">Relates to: {p["setting"]}</span>'
+            f'<p>{p["text"]}</p><p class="based">Based on {p["based_on"]}.</p></div>'
+            for p in patterns
+        )
+    else:
+        pattern_html = ('<div class="pattern"><p>Not enough data in this period to show patterns yet. '
+                        'Try a longer period, or add your bolus file.</p></div>')
+
     lo, hi = fmt(70), fmt(180)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -111,6 +122,15 @@ def build_report(glucose, basal, bolus, days, unit) -> str:
   .legend {{ display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 12px; font-size: 14px; color: #c9cfe0; }}
   .legend b {{ color: #e8eaf2; font-weight: 600; margin-left: 4px; }}
   img {{ max-width: 100%; display: block; }}
+  .patterns {{ border-color: rgba(167,139,250,0.30); }}
+  .intro {{ background: rgba(124,92,246,0.12); border: 1px solid rgba(167,139,250,0.28); border-radius: 12px;
+            padding: 12px 16px; color: #e9d5ff; font-size: 14px; line-height: 1.55; margin: 0 0 6px; }}
+  .pattern {{ padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.07); }}
+  .pattern:last-child {{ border-bottom: none; padding-bottom: 0; }}
+  .tag {{ display: inline-block; font-size: 12px; color: #c4b5fd; background: rgba(124,92,246,0.16);
+          border-radius: 999px; padding: 3px 10px; margin-bottom: 8px; }}
+  .pattern p {{ margin: 0; line-height: 1.6; color: #c9cfe0; font-size: 15px; }}
+  .pattern .based {{ color: #8b93ab; font-size: 13px; margin-top: 6px; }}
   .disclaimer {{ color: #8b93ab; font-size: 13px; line-height: 1.5; margin-top: 28px; text-align: center; }}
 </style></head>
 <body><main>
@@ -136,6 +156,11 @@ def build_report(glucose, basal, bolus, days, unit) -> str:
   {section("Day by day",
            "Blue line: glucose. Purple steps: basal rate (units per hour). Pink bars: boluses, labelled in units.",
            fig_to_html(plot_daily(glucose, basal, bolus, days=min(days, 7), units=units)), "daily")}
+
+  <section class="card patterns"><h2>Patterns to discuss with your care team</h2>
+    <p class="intro">{PATTERNS_INTRO}</p>
+    {pattern_html}
+  </section>
 
   <p class="disclaimer">{DISCLAIMER}</p>
 </main></body></html>"""

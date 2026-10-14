@@ -180,6 +180,116 @@ def graph_notes(glucose, basal=None, bolus=None, unit: str = "mgdl") -> dict[str
     return notes
 
 
+# ---------------------------------------------------------------------------
+# Patterns to discuss with your care team
+# ---------------------------------------------------------------------------
+# Each pattern describes WHAT HAPPENED and names the pump setting it relates to.
+# It deliberately never says whether a setting is wrong or which way to change it.
+MIN_EVENTS = 3          # need at least this many examples before showing a pattern
+
+
+def _delta(mgdl: float, mmol: bool) -> str:
+    """A signed change like '+12 mg/dL' or '−0.7 mmol/L' ('about 0' when it rounds to zero)."""
+    value = round(abs(mgdl) / 18, 1) if mmol else round(abs(mgdl))
+    if value == 0:
+        return "about 0"
+    sign = "+" if mgdl > 0 else "−"
+    return f"{sign}{value:.1f} mmol/L" if mmol else f"{sign}{value} mg/dL"
+
+
+def _after_corrections(g: pd.DataFrame, corrections: pd.DataFrame, mmol: bool):
+    lowest, went_low = [], 0
+    for t in corrections.timestamp:
+        window = g[(g.timestamp > t) & (g.timestamp <= t + pd.Timedelta(hours=4))]
+        if len(window) < 24:                    # need at least 2 hours of readings
+            continue
+        m = window.glucose_mgdl.min()
+        lowest.append(m)
+        went_low += m < 70
+    n = len(lowest)
+    if n < MIN_EVENTS:
+        return None
+    return {
+        "setting": "Correction factor (ISF)",
+        "text": (f"In {went_low} of {n} correction boluses, glucose went below {_fmt(70, mmol)} within 4 hours. "
+                 f"The average lowest reading in the 4 hours after a correction was "
+                 f"{_fmt(sum(lowest) / n, mmol)}."),
+        "based_on": f"{n} correction boluses with enough sensor data afterwards",
+    }
+
+
+def _after_meals(g: pd.DataFrame, meals: pd.DataFrame, mmol: bool):
+    targets = pd.DataFrame({"timestamp": (meals.timestamp + pd.Timedelta(hours=3)).astype("datetime64[ns]")})
+    readings = g.assign(timestamp=g.timestamp.astype("datetime64[ns]"))
+    later = pd.merge_asof(targets.sort_values("timestamp"), readings.sort_values("timestamp"), on="timestamp",
+                          direction="nearest", tolerance=pd.Timedelta(minutes=15)).dropna()
+    n = len(later)
+    if n < MIN_EVENTS:
+        return None
+    high = 100 * (later.glucose_mgdl > 180).mean()
+    low = 100 * (later.glucose_mgdl < 70).mean()
+    return {
+        "setting": "Carb ratio (and bolus timing)",
+        "text": (f"3 hours after meal boluses, glucose was above {_fmt(180, mmol)} {high:.0f}% of the time "
+                 f"and below {_fmt(70, mmol)} {low:.0f}% of the time. "
+                 f"The median value at that point was {_fmt(later.glucose_mgdl.median(), mmol)}."),
+        "based_on": f"{n} meal boluses",
+    }
+
+
+def _overnight(g: pd.DataFrame, bolus, mmol: bool):
+    changes, low_nights = [], 0
+    for day in g.timestamp.dt.normalize().unique():
+        night = g[(g.timestamp >= day) & (g.timestamp < day + pd.Timedelta(hours=6))]
+        if len(night) < 50:                     # skip nights with big sensor gaps
+            continue
+        if bolus is not None and len(bolus):
+            nearby = bolus[(bolus.timestamp >= day - pd.Timedelta(hours=3)) &
+                           (bolus.timestamp < day + pd.Timedelta(hours=6))]
+            if len(nearby):                     # boluses would hide what basal alone is doing
+                continue
+        start = night[night.timestamp < day + pd.Timedelta(minutes=30)].glucose_mgdl.mean()
+        end = night[night.timestamp >= day + pd.Timedelta(hours=5, minutes=30)].glucose_mgdl.mean()
+        if pd.isna(start) or pd.isna(end):
+            continue
+        changes.append(end - start)
+        low_nights += (night.glucose_mgdl < 70).any()
+    n = len(changes)
+    if n < MIN_EVENTS:
+        return None
+    rose = sum(c > 30 for c in changes)
+    fell = sum(c < -30 for c in changes)
+    no_bolus = "without boluses between 21:00 and 06:00" if bolus is not None else "(bolus data not added)"
+    return {
+        "setting": "Overnight basal rate",
+        "text": (f"From midnight to 06:00, glucose changed by {_delta(sum(changes) / n, mmol)} on average. "
+                 f"It rose by more than {_fmt(30, mmol)} on {rose} night(s), fell by more than {_fmt(30, mmol)} "
+                 f"on {fell} night(s), and went below {_fmt(70, mmol)} on {low_nights} night(s)."),
+        "based_on": f"{n} nights {no_bolus}",
+    }
+
+
+def care_team_patterns(glucose, bolus=None, unit: str = "mgdl") -> list[dict]:
+    """Descriptive patterns linked to pump settings. Never says what to change."""
+    mmol = unit == "mmol"
+    g = glucose[["timestamp", "glucose_mgdl"]].sort_values("timestamp")
+    found = []
+    if bolus is not None and "kind" in bolus and bolus.kind.notna().any():
+        found.append(_after_corrections(g, bolus[bolus.kind == "correction"], mmol))
+        found.append(_after_meals(g, bolus[bolus.kind == "meal"], mmol))
+    found.append(_overnight(g, bolus, mmol))
+    return [p for p in found if p]
+
+
+PATTERNS_INTRO = (
+    "These are things that happened in your data, each linked to the pump setting it relates to. "
+    "They don't mean a setting is wrong, and they don't say which way to change anything. "
+    "Many things affect these numbers (carb counting, exercise, illness, stress, site problems), "
+    "and if Control-IQ was on, the pump was already adjusting insulin automatically. "
+    "Only change pump settings together with your diabetes care team."
+)
+
+
 DISCLAIMER = (
     "These notes only describe your data. They are not medical advice and do not "
     "suggest any changes. Talk to your diabetes care team before making decisions about your treatment."

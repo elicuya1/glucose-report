@@ -36,6 +36,9 @@ GLUCOSE_COLUMNS = [
 ]
 BASAL_COLUMNS = ["basal_rate_u_per_hr", "basal rate (u/h)", "basal rate", "rate", "basal"]
 BOLUS_COLUMNS = ["bolus_units", "insulin delivered", "bolus volume delivered (u)", "bolus", "units", "insulin"]
+# Optional bolus details — used to tell meal boluses from corrections
+BOLUS_TYPE_COLUMNS = ["type", "bolus type", "bolustype", "bolus_type"]
+CARB_COLUMNS = ["carbs", "carbs (g)", "carb size", "carbsize", "carbohydrates", "carbs_g"]
 
 # Text values CGMs write instead of numbers when out of range
 TEXT_VALUES = {"low": 39, "high": 401, "lo": 39, "hi": 401}
@@ -118,8 +121,16 @@ def load_basal(path: str | Path) -> pd.DataFrame:
     return out.dropna().sort_values("timestamp").reset_index(drop=True)
 
 
+def _optional_column(df: pd.DataFrame, candidates: list[str]):
+    lookup = {c.strip().lower(): c for c in df.columns}
+    return next((lookup[n] for n in candidates if n in lookup), None)
+
+
 def load_bolus(path: str | Path) -> pd.DataFrame:
-    """Returns: timestamp, bolus_units."""
+    """
+    Returns: timestamp, bolus_units, kind.
+    kind is "meal", "correction", or None if the file doesn't say.
+    """
     path = Path(path)
     df = _read_csv(path)
     time_col = _find_column(df, TIME_COLUMNS, "time", path)
@@ -128,7 +139,21 @@ def load_bolus(path: str | Path) -> pd.DataFrame:
         "timestamp": _clean_times(df[time_col]),
         "bolus_units": pd.to_numeric(df[units_col], errors="coerce"),
     })
-    out = out.dropna()
+
+    # Work out meal vs correction from carbs (best) or a bolus-type column
+    carb_col = _optional_column(df, CARB_COLUMNS)
+    type_col = _optional_column(df, BOLUS_TYPE_COLUMNS)
+    kind = pd.Series([None] * len(df), index=df.index, dtype=object)
+    if carb_col:
+        carbs = pd.to_numeric(df[carb_col], errors="coerce").fillna(0)
+        kind[:] = ["meal" if c > 0 else "correction" for c in carbs]
+    elif type_col:
+        text = df[type_col].astype(str).str.lower()
+        kind[text.str.contains("meal|carb|food")] = "meal"
+        kind[kind.isna() & text.str.contains("correct")] = "correction"
+    out["kind"] = kind
+
+    out = out.dropna(subset=["timestamp", "bolus_units"])
     return out[out["bolus_units"] > 0].sort_values("timestamp").reset_index(drop=True)
 
 
