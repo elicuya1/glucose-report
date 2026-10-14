@@ -189,8 +189,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Glucose Report")
-        self.geometry("760x560")
-        self.minsize(700, 540)
+        self.geometry("760x620")
+        self.minsize(700, 580)
         self.configure(bg=BG)
 
         self.paths = {"glucose": "", "basal": "", "bolus": ""}
@@ -215,7 +215,7 @@ class App(tk.Tk):
             tk.Label(files.body, text=label, bg=CARD, fg=MUTED, font=(FONT, 10), width=9, anchor="w").grid(
                 row=i, column=0, sticky="w", pady=3)
             name = tk.Label(files.body, text="optional" if key != "glucose" else "no file", bg=CARD,
-                            fg="#4d546b" if key != "glucose" else MUTED, font=(FONT, 10), anchor="w")
+                            fg=EDGE if key != "glucose" else MUTED, font=(FONT, 10), anchor="w")
             name.grid(row=i, column=1, sticky="w")
             self.file_labels[key] = name
             Button(files.body, "Choose", lambda k=key: self.pick(k), primary=False,
